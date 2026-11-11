@@ -40,7 +40,7 @@ html, body { margin: 0; background: var(--color-bg); color: var(--color-fg); fon
 <script>
 /* Minimal stand-in for the Claude dashboard runtime: data, calcs, drawings, params. */
 (function () {
-  const DATASETS = ["shortlist", "all_projects", "scores", "observations", "map_layers"];
+  const DATASETS = ["shortlist", "all_projects", "scores", "observations", "map_layers", "score_breakdown"];
   const state = { data: {}, calcs: {}, calcDefs: [], draws: [], onData: [], params: {}, defaults: {}, made: new Map() };
   const dash = {
     colors: ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)'],
@@ -297,13 +297,13 @@ html, body { margin: 0; background: var(--color-bg); color: var(--color-fg); fon
   </div>
 
   <div class="pf-card" id="detail-card">
-    <div data-draw="detail" data-source="shortlist scores observations">—</div>
+    <div data-draw="detail" data-source="shortlist score_breakdown observations">—</div>
   </div>
 
   <div class="pf-card" id="compare-card">
     <h3>Compare with the current contender</h3>
-    <p class="pf-cap">Use "Add to compare" on any flat above. Up to three flats sit beside ABK Saffron.</p>
-    <div class="pf-scroll" data-draw="compare" data-source="shortlist">—</div>
+    <p class="pf-cap">Use "Add to compare" on any flat above. Up to three flats sit beside ABK Saffron, with the facts first and then the points each one earned per criterion.</p>
+    <div class="pf-scroll" data-draw="compare" data-source="shortlist score_breakdown">—</div>
   </div>
 </section>
 
@@ -731,6 +731,56 @@ dash.calc('criteria', {
       const st = r['gate_' + g];
       chip(gates, `${g} ${PF.GATES[g]}: ${st === 'pass' ? 'yes' : st === 'unknown' ? 'to confirm' + (PF.NEG.has(g) ? ' (negotiable)' : '') : 'no'}`, st === 'pass' ? 'ok' : st === 'unknown' ? 'warn' : 'bad');
     }
+    // why this score: strong points, lost points, and the full points table
+    const bd = rowsOf('score_breakdown');
+    if (bd) {
+      const mine = bd.filter((b) => b.key === r.key);
+      const theirs = new Map(bd.filter((b) => b.key === PF.BENCH).map((b) => [b.item, b]));
+      const crit = mine.filter((b) => b.kind === 'criterion'); const flags = mine.filter((b) => b.kind === 'redflag'); const total = mine.find((b) => b.kind === 'total');
+      const whyBox = box.append('div').attr('id', 'why-score').style('display', 'flex').style('flex-direction', 'column').style('gap', 'var(--cds-gap-sm)');
+      whyBox.append('h3').style('font-size', 'var(--cds-font-size-heading)').text(`Why it scored ${F.num1(r.score)} out of 100`);
+      if (total) whyBox.append('p').attr('class', 'pf-cap').text(total.why + (r.is_benchmark || !bench ? '' : ` The current contender scores ${F.num1(bench.score)}.`));
+      const first = (s) => String(s || '').replace(/^Severity \d of 5\. /, '').split(/(?<=[.;])\s/)[0];
+      const strengths = crit.filter((b) => b.score_0_5 !== null && b.score_0_5 >= 4).sort((a, b) => b.score_0_5 - a.score_0_5 || b.weight - a.weight).slice(0, 4);
+      const weak = [...crit.filter((b) => b.score_0_5 !== null && b.score_0_5 < 3.5), ...flags].sort((a, b) => b.lost - a.lost).slice(0, 5);
+      const sw = whyBox.append('div').attr('class', 'pf-two');
+      const col = (title, items, cls, pts) => {
+        const c = sw.append('div').attr('class', 'pf-card'); c.append('h3').text(title);
+        const ul = c.append('ul').attr('class', 'pf-obs').style('margin', 0).style('padding', 0);
+        if (!items.length) ul.append('li').attr('class', 'pf-cap').text('Nothing stands out.');
+        for (const b of items) { const li = ul.append('li').attr('class', cls); li.append('div').style('font-weight', 'var(--cds-font-weight-medium)').text(`${b.label.replace('Red flag: ', '⚑ ')} · ${pts(b)}`); li.append('div').attr('class', 'pf-cap').text(first(b.why)); }
+      };
+      col('Strong points', strengths, 'pos', (b) => `${b.score_0_5} of 5`);
+      col('Where it lost points', weak, 'neg', (b) => `−${F.num1(b.lost)} points`);
+      const wrap = whyBox.append('div').attr('class', 'pf-scroll');
+      const tbl = wrap.append('table').attr('data-source', 'score_breakdown').attr('data-row-key', 'key,item');
+      const hr = tbl.append('thead').append('tr');
+      hr.append('th').attr('data-field', 'label').text('What');
+      hr.append('th').attr('class', 'pf-n').attr('data-field', 'weight').text('Weight');
+      hr.append('th').attr('data-field', 'score_0_5').text('Rating 0–5');
+      hr.append('th').attr('class', 'pf-n').attr('data-field', 'points').text('Points');
+      if (!r.is_benchmark) hr.append('th').attr('class', 'pf-n').text('Contender');
+      hr.append('th').attr('data-field', 'why').text('Why');
+      const tb = tbl.append('tbody');
+      for (const b of [...crit, ...flags, ...(total ? [total] : [])]) {
+        const tr = tb.append('tr').attr('data-key', encodeURIComponent(b.key) + ',' + encodeURIComponent(b.item));
+        if (b.kind === 'total') tr.style('font-weight', 'var(--cds-font-weight-medium)');
+        tr.append('td').text(b.label);
+        tr.append('td').attr('class', 'pf-n').text(b.weight ?? '');
+        const rc = tr.append('td');
+        if (b.score_0_5 !== null) {
+          const bar = rc.append('div').style('display', 'flex').style('align-items', 'center').style('gap', '6px');
+          bar.append('span').style('display', 'inline-block').style('height', '8px').style('width', (b.score_0_5 / 5 * 56) + 'px').style('border-radius', '2px')
+            .style('background', b.score_0_5 >= 4 ? 'var(--color-ok)' : b.score_0_5 < 3 ? 'var(--color-bad)' : 'var(--color-warn)');
+          bar.append('span').text(b.score_0_5);
+        } else rc.attr('class', 'pf-cap').text(b.kind === 'redflag' ? 'deduction' : '');
+        tr.append('td').attr('class', 'pf-n').text(b.points === null ? '—' : b.kind === 'criterion' ? `${F.num1(b.points)} / ${F.num1(b.max_points)}` : F.num1(b.points));
+        if (!r.is_benchmark) { const o = theirs.get(b.item); tr.append('td').attr('class', 'pf-n').text(o && o.points !== null ? F.num1(o.points) : '—'); }
+        tr.append('td').attr('class', 'pf-cap').style('min-width', '260px').text(b.why);
+      }
+      whyBox.append('p').attr('class', 'pf-cap').text('Points = rating ÷ 5 × weight. Red flags take off 1, 2 or 4 points for serious problems (severity 3, 4 or 5), counted once per topic and capped at 10 in total.');
+    }
+    box.append('h3').text('Key facts');
     const two = box.append('div').attr('class', 'pf-two');
     const kv = two.append('dl').attr('class', 'pf-kv');
     const add = (label, value, field) => { kv.append('dt').text(label); const dd = kv.append('dd').text(value); if (field) dd.attr('data-source', 'shortlist').attr('data-field', field).attr('data-where', 'key=' + encodeURIComponent(r.key)); };
@@ -758,28 +808,6 @@ dash.calc('criteria', {
     if (r.red_flags) box.append('p').text('Red flags: ' + r.red_flags);
     if (r.small_things) box.append('p').attr('class', 'pf-cap').text('Small things: ' + r.small_things);
 
-    // criterion bars vs parents
-    const sc = rowsOf('scores');
-    if (sc) {
-      const mine = new Map(sc.filter((s) => s.key === r.key).map((s) => [s.criterion, s]));
-      const theirs = new Map(sc.filter((s) => s.key === PF.BENCH).map((s) => [s.criterion, s]));
-      const data = PF.CRIT.map(([c, label]) => ({ c, label, v: mine.get(c)?.score ?? null, b: theirs.get(c)?.score ?? null, why: mine.get(c)?.rationale }));
-      const cw = Math.max(280, el.clientWidth - 8); const rowH = 22; const lab = Math.min(170, cw * 0.4); const h = data.length * rowH + 22;
-      const x = d3.scaleLinear([0, 5], [lab, cw - 30]);
-      box.append('h3').text(r.is_benchmark ? 'Criterion scores' : "Criterion scores (bar) vs the current contender (tick)");
-      const svg = box.append('div').attr('class', 'pf-chart').append('svg').attr('width', '100%').attr('viewBox', `0 0 ${cw} ${h}`).attr('role', 'img').attr('aria-label', 'Criterion scores for ' + r.name);
-      svg.append('g').selectAll('line').data([0, 1, 2, 3, 4, 5]).join('line').attr('x1', x).attr('x2', x).attr('y1', 0).attr('y2', h - 16).style('stroke', 'var(--cds-chart-grid)');
-      svg.append('g').selectAll('text').data([0, 1, 2, 3, 4, 5]).join('text').attr('x', x).attr('y', h - 3).attr('text-anchor', 'middle').text((v) => v);
-      const g = svg.append('g').selectAll('g').data(data).join('g').attr('transform', (d, i) => `translate(0,${i * rowH})`);
-      g.append('title').text((d) => d.why || 'no rationale recorded');
-      g.append('text').attr('x', lab - 8).attr('y', rowH / 2 + 4).attr('text-anchor', 'end').text((d) => d.label);
-      g.append('rect').attr('x', x(0)).attr('y', 5).attr('height', rowH - 10).attr('width', (d) => x(d.v ?? 0) - x(0)).style('fill', PF.tierColor(r.tier));
-      if (!r.is_benchmark) g.append('line').attr('x1', (d) => x(d.b ?? 0)).attr('x2', (d) => x(d.b ?? 0)).attr('y1', 2).attr('y2', rowH - 2).style('stroke', 'var(--color-warn)').style('stroke-width', 2.5).style('display', (d) => d.b === null ? 'none' : null);
-      g.append('text').attr('x', (d) => x(d.v ?? 0) + 4).attr('y', rowH / 2 + 4).text((d) => d.v === null ? 'not scored' : d.v);
-      const why = box.append('details'); why.append('summary').text('Why each score');
-      const ul = why.append('ul').style('margin', '8px 0 0').style('padding-left', '18px').attr('class', 'pf-cap');
-      for (const d of data) ul.append('li').text(`${d.label}: ${d.v ?? '?'} — ${d.why || 'no rationale recorded'}`);
-    }
     // observations
     const ob = rowsOf('observations');
     if (ob) {
@@ -808,6 +836,24 @@ dash.calc('criteria', {
     for (const [label, field, f] of attrs) {
       const tr = tb.append('tr'); tr.append('th').text(label);
       for (const c of cols) tr.append('td').attr('data-source', 'shortlist').attr('data-field', field).attr('data-where', 'key=' + encodeURIComponent(c.key)).text(String(f(c)));
+    }
+    const bd = rowsOf('score_breakdown');
+    if (bd) {
+      const hd = tb.append('tr'); hd.append('th').attr('colspan', cols.length + 1).style('padding-top', '14px').text('Points by criterion (out of the weight)');
+      const items = bd.filter((x) => x.key === PF.BENCH && x.kind !== 'redflag');
+      const flagsOf = (k) => bd.filter((x) => x.key === k && x.kind === 'redflag').reduce((s, x) => s + (x.points || 0), 0);
+      for (const it of items) {
+        if (it.kind === 'total') {
+          const fr = tb.append('tr'); fr.append('th').text('Red flag deductions');
+          for (const c of cols) fr.append('td').text(F.num1(flagsOf(c.key)));
+        }
+        const tr = tb.append('tr'); tr.append('th').text(it.kind === 'total' ? 'Total score' : `${it.label} (${it.weight})`);
+        for (const c of cols) {
+          const m = bd.find((x) => x.key === c.key && x.item === it.item);
+          tr.append('td').attr('data-source', 'score_breakdown').attr('data-field', 'points').attr('data-where', 'key=' + encodeURIComponent(c.key) + '&item=' + encodeURIComponent(it.item))
+            .style('font-weight', it.kind === 'total' ? 'var(--cds-font-weight-medium)' : null).text(m && m.points !== null ? F.num1(m.points) : 'not scored');
+        }
+      }
     }
   });
 
