@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Pune Flat Finder</title>
+<style>
+:root {
+  --color-fg: #1d2326; --color-fg-muted: #5f6a70; --color-bg: #fbfcfc; --color-panel: #ffffff; --color-border-line: #dfe5e7;
+  --color-ok: #2f7d4f; --color-warn: #b26a00; --color-bad: #b3372f;
+  --s1: #2f6f8f; --s2: #8a6bb8; --s3: #9aa5ab; --s4: #c28b2c;
+  --font-anthropic-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-anthropic-serif: Georgia, "Times New Roman", serif;
+  --cds-font-size-caption: 0.8rem; --cds-font-size-body: 0.92rem; --cds-font-size-heading: 1.2rem; --cds-font-size-title: 2rem;
+  --cds-font-weight-medium: 600;
+  --cds-gap-xs: 4px; --cds-gap-sm: 8px; --cds-gap-md: 12px; --cds-gap-lg: 18px; --cds-gap-xl: 28px;
+  --cds-pad-sm: 8px; --cds-pad-md: 12px; --cds-pad-lg: 16px; --cds-radius: 10px;
+  --cds-chart-grid: #e6eaec; --cds-chart-axis: #b7c0c4; --cds-chart-muted: #c9d0d3; --cds-chart-reference: #8b969b; --cds-chart-status-critical: #c8553d;
+  --cds-text-secondary: #5f6a70; --cds-surface-popover: #ffffff; --cds-border: #dfe5e7; --cds-shadow-popover: 0 6px 20px rgba(20,30,35,.14);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --color-fg: #e6ecee; --color-fg-muted: #a1adb2; --color-bg: #121618; --color-panel: #1a2023; --color-border-line: #2c3438;
+  --color-ok: #5fbf86; --color-warn: #e0a344; --color-bad: #ec7a6f;
+  --s1: #6fb3d2; --s2: #b49ae0; --s3: #7d888e; --s4: #e0b25a;
+  --cds-chart-grid: #2a3236; --cds-chart-axis: #4a565b; --cds-chart-muted: #3a4448; --cds-chart-reference: #7d888e; --cds-chart-status-critical: #ec7a6f;
+  --cds-text-secondary: #a1adb2; --cds-surface-popover: #1f262a; --cds-border: #2c3438; --cds-shadow-popover: 0 6px 20px rgba(0,0,0,.5);
+  color-scheme: dark;
+} }
+html, body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: var(--font-anthropic-sans); font-size: 15px; }
+#dash-root { max-width: 1180px; margin: 0 auto; padding-block: 20px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.dash-select { font: inherit; font-size: 0.85rem; padding: 6px 28px 6px 10px; border-radius: 8px; border: 1px solid var(--color-border-line); color: var(--color-fg); background-color: var(--color-panel); appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%; background-size: 5px 5px; background-repeat: no-repeat; }
+.pf-snapshot { font-size: 0.78rem; color: var(--color-fg-muted); text-align: center; padding: 8px 16px; border-bottom: 1px solid var(--color-border-line); }
+[hidden] { display: none !important; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+/* Minimal stand-in for the Claude dashboard runtime: data, calcs, drawings, params. */
+(function () {
+  const DATASETS = ["shortlist", "all_projects", "scores", "observations", "map_layers"];
+  const state = { data: {}, calcs: {}, calcDefs: [], draws: [], onData: [], params: {}, defaults: {}, made: new Map() };
+  const dash = {
+    colors: ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)'],
+    data(id) {
+      if (id in state.calcs) return { status: 'ok', data: state.calcs[id] };
+      const d = state.data[id];
+      if (!d) return { status: state.loaded ? 'missing' : 'loading', data: [] };
+      return d;
+    },
+    calc(id, def) { state.calcDefs.push([id, def]); },
+    loader() {},
+    draw(name, fn) { if (fn) state.draws.push([name, fn]); else render(); },
+    onData(fn) { state.onData.push(fn); },
+    params() { return Object.assign({}, state.defaults, state.params); },
+    setParams(p) { for (const [k, v] of Object.entries(p)) { if (v === null) delete state.params[k]; else state.params[k] = v; } schedule(); },
+    resetParams() { state.params = {}; schedule(); },
+    refresh() {}, setLink() {},
+  };
+  window.dash = dash;
+  let pending = false;
+  function schedule() { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; render(); }); }
+  function render() {
+    for (const fn of state.onData) { try { fn(); } catch (e) { console.error(e); } }
+    for (const [name, fn] of state.draws) {
+      document.querySelectorAll(`[data-draw="${name}"]`).forEach((el) => {
+        try {
+          if (typeof fn === 'function') fn(el);
+          else { let m = state.made.get(el); if (!m) { el.textContent = ''; m = { v: fn.mount ? fn.mount(el) : undefined }; state.made.set(el, m); } fn.update && fn.update(el, m.v); }
+        } catch (e) { console.error('draw ' + name, e); }
+      });
+    }
+  }
+  window.addEventListener('resize', () => schedule());
+  document.addEventListener('DOMContentLoaded', async () => {
+    state.defaults = {"budget": 2.6, "poss": "any", "temple": 30, "minscore": 0, "park": 0, "nala": 0, "areas": "", "hard": false, "missing": "keep", "sel": "", "cmp": "", "q": "", "bucket": "", "sort": "score:desc"};
+    render();
+    await Promise.all(DATASETS.map(async (id) => {
+      try { const r = await fetch('data/' + id + '.json'); const j = await r.json(); state.data[id] = { status: 'ok', data: j, columns: j.length ? Object.keys(j[0]) : [] }; }
+      catch (e) { state.data[id] = { status: 'error', data: [], message: String(e) }; }
+    }));
+    state.loaded = true;
+    for (const [id, def] of state.calcDefs) {
+      try { state.calcs[id] = def.fn(...def.inputs.map((i) => (i in state.calcs ? state.calcs[i] : (state.data[i] || {}).data || []))); }
+      catch (e) { console.error('calc ' + id, e); state.calcs[id] = []; }
+    }
+    render();
+  });
+})();
+</script>
+</head>
+<body>
+<div class="pf-snapshot">Snapshot of the research as of 10 Nov 2026. Ask Dheeraj for an update after builder calls or site visits.</div>
+<div id="dash-root">
+
+<style>
+.pf { --pf-gap: var(--cds-gap-lg); display: flex; flex-direction: column; gap: var(--cds-gap-xl); font-family: var(--font-anthropic-sans); color: var(--color-fg); }
+.pf h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0; text-wrap: balance; }
+.pf h2 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0; text-wrap: balance; }
+.pf h3 { font-size: var(--cds-font-size-body); font-weight: var(--cds-font-weight-medium); margin: 0; }
+.pf p { margin: 0; line-height: 1.5; max-width: 72ch; }
+.pf .pf-muted { color: var(--color-fg-muted); }
+.pf .pf-cap { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.pf .pf-eyebrow { font-size: var(--cds-font-size-caption); text-transform: uppercase; letter-spacing: .08em; color: var(--color-fg-muted); }
+.pf section { display: flex; flex-direction: column; gap: var(--cds-gap-md); min-width: 0; }
+.pf .pf-card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); min-width: 0; display: flex; flex-direction: column; gap: var(--cds-gap-sm); }
+.pf .pf-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--cds-gap-md); }
+.pf .pf-tile .pf-big { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: 2rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.pf .pf-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--cds-gap-lg); }
+.pf .pf-scroll { overflow-x: auto; min-width: 0; }
+.pf table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: var(--cds-font-size-body); }
+.pf th { text-align: left; font-weight: var(--cds-font-weight-medium); color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); padding: 6px 8px; border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+.pf td { padding: 7px 8px; border-bottom: 1px solid var(--color-border-line); vertical-align: top; }
+.pf td.pf-n, .pf th.pf-n { text-align: right; white-space: nowrap; }
+.pf tr.pf-click { cursor: pointer; }
+.pf tr.pf-click:hover td { background: color-mix(in srgb, var(--color-fg) 5%, transparent); }
+.pf tr.pf-sel td { background: color-mix(in srgb, var(--color-warn) 14%, transparent); }
+.pf tr.pf-bench td { background: color-mix(in srgb, var(--color-warn) 9%, transparent); }
+.pf th[data-sort] { cursor: pointer; }
+.pf th.pf-sorted::after { content: " ↓"; }
+.pf th.pf-sorted-asc::after { content: " ↑"; }
+.pf .pf-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 999px; font-size: var(--cds-font-size-caption); border: 1px solid var(--color-border-line); white-space: nowrap; line-height: 1.6; }
+.pf .pf-chip.ok { color: var(--color-ok); border-color: color-mix(in srgb, var(--color-ok) 45%, transparent); }
+.pf .pf-chip.warn { color: var(--color-warn); border-color: color-mix(in srgb, var(--color-warn) 45%, transparent); }
+.pf .pf-chip.bad { color: var(--color-bad); border-color: color-mix(in srgb, var(--color-bad) 45%, transparent); }
+.pf .pf-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pf .pf-tier { display: inline-block; min-width: 1.6em; text-align: center; border-radius: 4px; font-size: var(--cds-font-size-caption); font-weight: var(--cds-font-weight-medium); padding: 0 4px; color: var(--color-bg); }
+.pf .pf-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--cds-gap-md) var(--cds-gap-lg); }
+.pf .pf-filter { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pf .pf-filter label { font-size: var(--cds-font-size-caption); font-weight: var(--cds-font-weight-medium); }
+.pf .pf-filter input[type=range] { width: 100%; accent-color: var(--color-fg); }
+.pf .pf-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-gap-sm); }
+.pf button.pf-btn { font: inherit; font-size: var(--cds-font-size-caption); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--color-border-line); background: var(--color-bg); color: var(--color-fg); cursor: pointer; }
+.pf button.pf-btn[aria-pressed=true] { background: var(--color-fg); color: var(--color-bg); border-color: var(--color-fg); }
+.pf button.pf-btn:focus-visible, .pf input:focus-visible, .pf select:focus-visible, .pf tr:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.pf input[type=search] { font: inherit; padding: 6px 10px; border-radius: var(--cds-radius); border: 1px solid var(--color-border-line); background: var(--color-bg); color: var(--color-fg); min-width: 0; width: 100%; max-width: 360px; }
+.pf .pf-note { border-left: 3px solid var(--color-warn); padding: 6px 12px; background: color-mix(in srgb, var(--color-warn) 8%, transparent); border-radius: 0 var(--cds-radius) var(--cds-radius) 0; }
+.pf .pf-mapbox { position: relative; width: 100%; min-height: 420px; }
+.pf .pf-mapbox svg { display: block; width: 100%; height: 460px; touch-action: none; }
+.pf .pf-tip { position: absolute; pointer-events: none; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); box-shadow: var(--cds-shadow-popover); border-radius: var(--cds-radius); padding: 6px 9px; font-size: var(--cds-font-size-caption); max-width: 240px; z-index: 2; }
+.pf .pf-legend { display: flex; flex-wrap: wrap; gap: var(--cds-gap-md); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.pf .pf-sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.pf .pf-chart { min-height: 120px; }
+.pf .pf-chart text { fill: var(--cds-text-secondary); font-size: var(--cds-font-size-caption); }
+.pf .pf-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: var(--cds-font-size-body); }
+.pf .pf-kv dt { color: var(--color-fg-muted); }
+.pf .pf-kv dd { margin: 0; min-width: 0; }
+.pf .pf-obs { display: flex; flex-direction: column; gap: 8px; }
+.pf .pf-obs li { list-style: none; padding-left: 10px; border-left: 3px solid var(--color-border-line); }
+.pf .pf-obs li.neg { border-color: var(--color-bad); }
+.pf .pf-obs li.pos { border-color: var(--color-ok); }
+.pf .pf-obs ul { margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.pf details > summary { cursor: pointer; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.pf .pf-divider { border: 0; border-top: 1px solid var(--color-border-line); margin: var(--cds-gap-md) 0; }
+.pf .pf-tall { max-height: 520px; overflow: auto; }
+.pf [data-dash-source-state=refreshing] { opacity: .5; }
+.pf a { color: inherit; }
+</style>
+
+<div class="pf">
+
+<header id="top" class="pf-head" style="display:flex;flex-direction:column;gap:var(--cds-gap-sm)">
+  <span class="pf-eyebrow">New 3 BHK near Ahobila Mutt Balaji Mandir, Pashan · research as of 10 Nov 2026</span>
+  <h1>Pune Flat Finder</h1>
+  <p><b data-draw="val" data-source="summary" data-field="in_running" data-row="0" data-fmt="int">—</b> flats are still in the running, out of <b data-draw="val" data-source="summary" data-field="projects_found" data-row="0" data-fmt="int">—</b> projects found. <b data-draw="val" data-source="summary" data-field="fully_cleared" data-row="0" data-fmt="int">—</b> of them clear every must-have on paper; the rest need something confirmed with the builder, usually parking or water. The top-ranked, <b data-draw="val" data-source="summary" data-field="top_name" data-row="0">—</b>, scores <b data-draw="val" data-source="summary" data-field="top_score" data-row="0" data-fmt="num1">—</b> out of 100, against <b data-draw="val" data-source="summary" data-field="contender_score" data-row="0" data-fmt="num1">—</b> for the current contender, ABK Saffron.</p>
+  <p class="pf-note pf-cap">Missing data is never treated as a fail here. Where a value is unknown, the flat stays in every list and carries a ⚠ so you can see what still needs checking. Parking (G4) and water (G6) are marked as negotiable: they can usually be fixed with the builder.</p>
+</header>
+
+<section id="report-summary" aria-label="Summary">
+  <div class="pf-tiles">
+    <div class="pf-card pf-tile" id="tile-found"><span class="pf-cap">Projects found</span><span class="pf-big" data-draw="val" data-source="summary" data-field="projects_found" data-row="0" data-fmt="int">—</span><span class="pf-cap">across 10 west Pune areas, all sources</span></div>
+    <div class="pf-card pf-tile" id="tile-running"><span class="pf-cap">Still in the running</span><span class="pf-big" data-draw="val" data-source="summary" data-field="in_running" data-row="0" data-fmt="int">—</span><span class="pf-cap">reviewed in depth and not ruled out</span></div>
+    <div class="pf-card pf-tile" id="tile-beat"><span class="pf-cap">Score above the current contender</span><span class="pf-big" data-draw="val" data-source="summary" data-field="beat_contender" data-row="0" data-fmt="int">—</span><span class="pf-cap">on the weighted 0–100 score</span></div>
+    <div class="pf-card pf-tile" id="tile-second"><span class="pf-cap">Worth a second look</span><span class="pf-big" data-draw="val" data-source="summary" data-field="second_look" data-row="0" data-fmt="int">—</span><span class="pf-cap">rejected on a negotiable item or missing data, or never reviewed within 3 km of the temple</span></div>
+  </div>
+</section>
+
+<section id="parents-flat" aria-label="Your parents' flat">
+  <h2>Current contender: ABK Saffron, Wing B</h2>
+  <div class="pf-two">
+    <div class="pf-card">
+      <span class="pf-cap">S.No. 120/5/1/2/8/10A, Sutarwadi, Pashan · A B Kokate Developers · architect Vilas Tarwadi</span>
+      <dl class="pf-kv">
+        <dt>Score</dt><dd><b data-draw="val" data-source="shortlist" data-field="score" data-where="key=ab-kokate-saffron-pashan" data-fmt="num1">—</b> / 100 · rank <span data-draw="val" data-source="shortlist" data-field="rank" data-where="key=ab-kokate-saffron-pashan" data-fmt="int">—</span> of <span data-draw="val" data-source="summary" data-field="in_running" data-row="0" data-fmt="int">—</span></dd>
+        <dt>All-in price</dt><dd>₹<span data-draw="val" data-source="shortlist" data-field="all_in_text" data-where="key=ab-kokate-saffron-pashan">—</span> Cr</dd>
+        <dt>Carpet area</dt><dd><span data-draw="val" data-source="shortlist" data-field="carpet_text" data-where="key=ab-kokate-saffron-pashan">—</span> sq ft</dd>
+        <dt>Possession</dt><dd data-draw="val" data-source="shortlist" data-field="possession_text" data-where="key=ab-kokate-saffron-pashan">—</dd>
+        <dt>Temple drive</dt><dd><span data-draw="val" data-source="shortlist" data-field="temple_min" data-where="key=ab-kokate-saffron-pashan" data-fmt="num1">—</span> min at peak (a short walk)</dd>
+        <dt>Parking</dt><dd data-draw="val" data-source="shortlist" data-field="parking" data-where="key=ab-kokate-saffron-pashan">—</dd>
+        <dt>Water</dt><dd data-draw="val" data-source="shortlist" data-field="water" data-where="key=ab-kokate-saffron-pashan">—</dd>
+        <dt>Red flags</dt><dd data-draw="val" data-source="shortlist" data-field="red_flags" data-where="key=ab-kokate-saffron-pashan">—</dd>
+      </dl>
+      <p class="pf-cap">Documents to ask the builder for: occupancy certificate, Sahakari Bank release NOC for the flat, Wing B's own title report, written allotment of a 2nd car park, PMC water connection.</p>
+    </div>
+    <div class="pf-card" id="crit-card">
+      <h3>Where other flats beat it</h3>
+      <p class="pf-cap">Each criterion scored 0–5. Bar = current contender; tick = the median of Tier A flats.</p>
+      <div class="pf-chart" data-draw="crit-chart" data-source="criteria" role="img" aria-label="Criterion scores for the current contender compared with the Tier A median"></div>
+    </div>
+  </div>
+</section>
+
+<section id="top-picks" aria-label="Top picks">
+  <h2>Top picks</h2>
+  <p class="pf-cap">The ten highest scores, with the current contender added for comparison. "Open" items are must-haves not yet confirmed; amber ones are negotiable with the builder. Click a row to open it in the explorer below.</p>
+  <div class="pf-scroll">
+    <table id="top-table" data-source="shortlist" data-row-key="key">
+      <thead><tr><th data-field="tier">Tier</th><th data-field="name">Project</th><th data-field="locality">Area</th><th class="pf-n" data-field="score">Score</th><th class="pf-n" data-field="vs_benchmark">vs contender</th><th class="pf-n" data-field="all_in_text">All-in ₹ Cr</th><th data-field="possession_text">Possession</th><th class="pf-n" data-field="temple_min">Temple min</th><th data-field="open_gates">Open must-haves</th></tr></thead>
+      <tbody data-draw="top-rows"></tbody>
+    </table>
+  </div>
+</section>
+
+<section id="gaps" aria-label="Missing data">
+  <div class="pf-two">
+    <div class="pf-card">
+      <h3>What we still don't know</h3>
+      <p class="pf-cap">Number of the flats still in the running that are missing each item. Most of these can only be settled by a builder call, a site visit or MahaRERA from an Indian connection.</p>
+      <div class="pf-chart" data-draw="gap-chart" data-source="gaps" role="img" aria-label="Count of shortlisted flats missing each data item"></div>
+    </div>
+    <div class="pf-card">
+      <h3>By area</h3>
+      <div class="pf-scroll">
+        <table id="loc-table" data-source="localities" data-row-key="area">
+          <thead><tr><th data-field="area">Area</th><th class="pf-n" data-field="flats">Flats</th><th class="pf-n" data-field="tier_a">Tier A</th><th class="pf-n" data-field="median_score">Median score</th><th class="pf-n" data-field="median_price_cr">Median ₹ Cr</th><th class="pf-n" data-field="median_temple_min">Temple min</th></tr></thead>
+          <tbody data-draw="loc-rows"></tbody>
+        </table>
+      </div>
+      <p class="pf-cap">Pashan fits best on temple access. Kothrud is walkable but most new buildings are small redevelopments where 2 proper parkings rarely fit.</p>
+    </div>
+  </div>
+</section>
+
+<section id="second-look" aria-label="Worth a second look">
+  <h2>Worth a second look</h2>
+  <p class="pf-cap">Projects that might have been ruled out unfairly: rejected only on parking or water (which are negotiable) or on missing data, plus projects within 3 km of the temple that were never reviewed in depth. Treat these as leads, not recommendations.</p>
+  <div class="pf-scroll pf-tall">
+    <table id="second-table" data-source="all_projects" data-row-key="key">
+      <thead><tr><th data-field="name">Project</th><th data-field="locality">Area</th><th data-field="second_look">Why look again</th><th class="pf-n" data-field="temple_km">km to temple</th><th class="pf-n" data-field="price3_min_cr">3 BHK from ₹ Cr</th><th data-field="reason">What we have</th></tr></thead>
+      <tbody data-draw="second-rows"></tbody>
+    </table>
+  </div>
+</section>
+
+<hr class="pf-divider">
+
+<section id="explore" aria-label="Explore">
+  <span class="pf-eyebrow">Explore</span>
+  <h2>Find flats that fit</h2>
+  <div class="pf-card">
+    <div class="pf-filters">
+      <div class="pf-filter"><label for="f-budget">Budget, lowest all-in price up to <span data-draw="param" data-param="budget" data-fmt="cr">—</span></label><input id="f-budget" type="range" min="1" max="3" step="0.05"><span class="pf-cap" data-draw="fc" data-filter="budget">—</span></div>
+      <div class="pf-filter"><label for="f-poss">Possession by</label><select id="f-poss" class="dash-select"><option value="any">Any date</option><option value="2026-12">Dec 2026</option><option value="2027-06">Jun 2027</option><option value="2027-12">Dec 2027</option><option value="2028-05">May 2028</option></select><span class="pf-cap" data-draw="fc" data-filter="poss">—</span></div>
+      <div class="pf-filter"><label for="f-temple">Drive to temple at peak, up to <span data-draw="param" data-param="temple" data-fmt="min">—</span></label><input id="f-temple" type="range" min="3" max="30" step="1"><span class="pf-cap" data-draw="fc" data-filter="temple">—</span></div>
+      <div class="pf-filter"><label for="f-score">Score at least <span data-draw="param" data-param="minscore" data-fmt="int">—</span></label><input id="f-score" type="range" min="0" max="75" step="1"><span class="pf-cap" data-draw="fc" data-filter="minscore">—</span></div>
+      <div class="pf-filter"><label for="f-park">Park within <span data-draw="param" data-param="park" data-fmt="dist">—</span></label><input id="f-park" type="range" min="0" max="1000" step="50"><span class="pf-cap" data-draw="fc" data-filter="park">—</span></div>
+      <div class="pf-filter"><label for="f-nala">Nala or river at least <span data-draw="param" data-param="nala" data-fmt="dist0">—</span> away</label><input id="f-nala" type="range" min="0" max="500" step="25"><span class="pf-cap" data-draw="fc" data-filter="nala">—</span></div>
+    </div>
+    <div class="pf-filter"><label>Areas</label><div class="pf-chips" data-draw="area-chips" data-source="shortlist"></div></div>
+    <div class="pf-row">
+      <label class="pf-cap" for="f-hard"><input id="f-hard" type="checkbox"> Hide flats with an open non-negotiable must-have (newness, possession date, budget)</label>
+    </div>
+    <div class="pf-row">
+      <span class="pf-cap">When a value is unknown:</span>
+      <button class="pf-btn" type="button" id="m-keep" aria-pressed="true">Keep the flat (recommended)</button>
+      <button class="pf-btn" type="button" id="m-hide" aria-pressed="false">Hide it</button>
+      <button class="pf-btn" type="button" id="f-reset">Reset filters</button>
+    </div>
+  </div>
+  <p data-draw="result-line">—</p>
+
+  <div class="pf-card" id="map-card">
+    <div class="pf-row" style="justify-content:space-between"><h3>Map</h3><span class="pf-cap">Scroll or pinch to zoom, drag to pan. Click a dot for details.</span></div>
+    <div class="pf-mapbox" data-draw="map" data-source="shortlist map_layers" role="img" aria-label="Map of shortlisted flats around the Pashan temple, with rivers and main roads"></div>
+    <div class="pf-legend">
+      <span><span class="pf-sw" data-draw="sw" data-i="0"></span>Tier A</span>
+      <span><span class="pf-sw" data-draw="sw" data-i="1"></span>Tier B</span>
+      <span><span class="pf-sw" data-draw="sw" data-i="2"></span>Tier C</span>
+      <span>★ current contender (ABK Saffron)</span><span>◆ Balaji Mandir</span>
+      <span>Faded dots are filtered out · flats more than 12 km away sit off the edge</span><span>Blue lines: rivers and nalas · grey: main roads</span>
+    </div>
+  </div>
+
+  <div class="pf-scroll">
+    <table id="explore-table" data-source="shortlist" data-row-key="key">
+      <thead><tr>
+        <th data-field="tier" data-sort="tier">Tier</th><th data-field="name" data-sort="name">Project</th><th data-field="locality" data-sort="locality">Area</th>
+        <th class="pf-n" data-field="score" data-sort="score">Score</th><th class="pf-n" data-field="all_in_min_cr" data-sort="all_in_min_cr">From ₹ Cr</th>
+        <th data-field="possession_date" data-sort="possession_date">Possession</th><th class="pf-n" data-field="temple_min" data-sort="temple_min">Temple min</th>
+        <th class="pf-n" data-field="park_m" data-sort="park_m">Park</th><th class="pf-n" data-field="nala_m" data-sort="nala_m">Nala</th>
+        <th data-field="open_gates">Open must-haves</th><th class="pf-n" data-field="data_gap_count" data-sort="data_gap_count">Unknowns</th>
+      </tr></thead>
+      <tbody data-draw="explore-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="pf-card" id="detail-card">
+    <div data-draw="detail" data-source="shortlist scores observations">—</div>
+  </div>
+
+  <div class="pf-card" id="compare-card">
+    <h3>Compare with the current contender</h3>
+    <p class="pf-cap">Use "Add to compare" on any flat above. Up to three flats sit beside ABK Saffron.</p>
+    <div class="pf-scroll" data-draw="compare" data-source="shortlist">—</div>
+  </div>
+</section>
+
+<section id="all-projects" aria-label="All projects">
+  <span class="pf-eyebrow">Everything we found</span>
+  <h2>All <span data-draw="val" data-source="summary" data-field="projects_found" data-row="0" data-fmt="int">—</span> projects</h2>
+  <p class="pf-cap">Every project the search collected, including the ones ruled out and why. Search by name, builder or area.</p>
+  <div class="pf-row">
+    <input type="search" id="f-q" placeholder="Search name, builder, area" aria-label="Search all projects">
+    <select id="f-bucket" class="dash-select" aria-label="Review status" data-draw="bucket-select" data-source="all_projects"></select>
+  </div>
+  <p class="pf-cap" data-draw="allp-count">—</p>
+  <div class="pf-scroll pf-tall">
+    <table id="allp-table" data-source="all_projects" data-row-key="key">
+      <thead><tr><th data-field="name">Project</th><th data-field="builder">Builder</th><th data-field="locality">Area</th><th data-field="bucket">Status</th><th class="pf-n" data-field="temple_km">km to temple</th><th class="pf-n" data-field="price3_min_cr">3 BHK from ₹ Cr</th><th data-field="possession_date">Possession</th><th data-field="reason">Reason / notes</th></tr></thead>
+      <tbody data-draw="allp-rows"></tbody>
+    </table>
+  </div>
+  <details>
+    <summary>How the score works and where the data came from</summary>
+    <div class="pf-cap" style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+      <p>Must-haves (gates): G1 3 BHK · G2 new, or first owner within about a year of OC · G3 possession by May 2028 · G4 two independent parkings (negotiable) · G5 lift · G6 PMC water or a society that manages water well (negotiable) · G7 within 30 min of the temple at peak · G8 budget about ₹1.5–2 Cr, hard limit ₹2.6 Cr · G9 not a lone building beside a slum or nala.</p>
+      <p>Score: twelve criteria rated 0–5 and weighted (walkability 14, traffic 10, cleanliness 10, society 10, water 8, shops on foot 8, temple and community 8, value 8, healthcare 7, flat specifics 7, possession and legal 7, Kothrud 3), scaled to 100, minus up to 10 for serious red flags.</p>
+      <p>Drive times are estimates: free-flow routing times 1.9 for evening traffic. Distances to parks, nalas, slums and roads come from OpenStreetMap and are capped at the search radius, shown as "800+ m".</p>
+      <p>Sources: NoBroker, SquareYards, MagicBricks, Dwello, Housiey, Houssed, HomeBazaar, builder websites, MahaRERA mirror sites, news and forums. MahaRERA itself and Housing.com could not be reached from the research machine, so OC status is often unconfirmed.</p>
+    </div>
+  </details>
+</section>
+
+</div>
+
+<script>
+// ---------- shared helpers (pure functions, no page writes) ----------
+window.PF = (function () {
+  const GROUPS = [['Pashan', /pashan|sutarwadi|someshwar|ncl|panch/i], ['Baner', /baner|mohan nagar/i], ['Balewadi', /balewadi|mahalunge/i], ['Aundh', /aundh|sanewadi|bopodi|pallod/i], ['Bavdhan', /bavdhan|chandani/i], ['Sus', /\bsus\b/i], ['Kothrud', /kothrud|bhusari|paud|karve|erandwane|rambaug|dahanukar|lokmanya|ideal colony|kumbre/i], ['Warje', /warje/i], ['Shivajinagar', /shivaji|model colony|gokhale|senapati|university/i]];
+  const group = (loc) => { for (const [g, re] of GROUPS) if (re.test(loc || '')) return g; return 'Other'; };
+  const CAPS = { nala_m: 800, slum_m: 1200, main_road_m: 400 };
+  const DEFAULTS = { budget: 2.6, poss: 'any', temple: 30, minscore: 0, park: 0, nala: 0, areas: '', hard: false, missing: 'keep', sel: '', cmp: '', q: '', bucket: '', sort: 'score:desc' };
+  const P = () => Object.assign({}, DEFAULTS, dash.params() || {});
+  const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(+v)) ? null : +v;
+  const fmt = {
+    int: (v) => num(v) === null ? '—' : d3.format(',')(Math.round(v)),
+    num1: (v) => num(v) === null ? '—' : d3.format('.1f')(v),
+    cr: (v) => num(v) === null ? '—' : '₹' + d3.format('.2f')(v) + ' Cr',
+    min: (v) => num(v) === null ? '—' : Math.round(v) + ' min',
+    m: (v, cap) => num(v) === null ? 'unknown' : (cap && +v >= cap) ? d3.format(',')(cap) + '+ m' : (+v < 100 ? '<100 m' : d3.format(',')(Math.round(v / 10) * 10) + ' m'),
+    date: (s) => { if (!s) return 'unknown'; const d = new Date(String(s).slice(0, 10) + (String(s).length <= 7 ? '-01' : '')); return isNaN(d) ? String(s) : d3.utcFormat('%b %Y')(d); },
+  };
+  const FILTERS = {
+    budget: { field: 'all_in_min_cr', test: (v, p) => v <= +p.budget, active: (p) => +p.budget < 3 },
+    poss: { field: 'possession_date', test: (v, p) => String(v).slice(0, 7) <= p.poss, active: (p) => p.poss !== 'any' },
+    temple: { field: 'temple_min', test: (v, p) => v <= +p.temple, active: (p) => +p.temple < 30 },
+    minscore: { field: 'score', test: (v, p) => v >= +p.minscore, active: (p) => +p.minscore > 0 },
+    park: { field: 'park_m', test: (v, p) => v <= +p.park, active: (p) => +p.park > 0 },
+    nala: { field: 'nala_m', test: (v, p) => v >= +p.nala, active: (p) => +p.nala > 0 },
+  };
+  function filter(rows, p) {
+    const areas = (p.areas || '').split(',').filter(Boolean);
+    const out = []; const stats = {};
+    for (const k in FILTERS) stats[k] = { removed: 0, unknownKept: 0, unknownHidden: 0 };
+    for (const r of rows) {
+      let keep = true; const unknownFor = [];
+      for (const [k, f] of Object.entries(FILTERS)) {
+        if (!f.active(p)) continue;
+        const v = r[f.field];
+        if (v === null || v === undefined || v === '') {
+          if (p.missing === 'hide') { keep = false; stats[k].unknownHidden++; } else { unknownFor.push(k); stats[k].unknownKept++; }
+        } else if (!f.test(v, p)) { keep = false; stats[k].removed++; }
+      }
+      if (areas.length && !areas.includes(group(r.locality))) keep = false;
+      if (p.hard && r.open_hard) keep = false;
+      if (keep) out.push({ row: r, unknownFor });
+    }
+    return { rows: out, stats };
+  }
+  const LABELS = { budget: 'budget', poss: 'possession date', temple: 'temple drive', minscore: 'score', park: 'park distance', nala: 'nala distance' };
+  const GATES = { G1: '3 BHK', G2: 'New / first owner', G3: 'Possession by May 2028', G4: '2 proper parkings', G5: 'Lift', G6: 'Water', G7: '≤30 min to temple', G8: 'Budget', G9: 'Not beside slum or nala' };
+  const NEG = new Set(['G4', 'G6']);
+  const tierColor = (t) => dash.colors[{ A: 0, B: 1, C: 2 }[t] ?? 3] || dash.colors[0];
+  const CRIT = [['C1', 'Walkable roads', 14], ['C2', 'Traffic, approach', 10], ['C3', 'Clean surroundings', 10], ['C4', 'Society, security', 10], ['C5', 'Water reliability', 8], ['C6', 'Shops on foot', 8], ['C7', 'Healthcare', 7], ['C8', 'Temple, community', 8], ['C9', 'Near Kothrud', 3], ['C10', 'Value for money', 8], ['C11', 'Flat specifics', 7], ['C12', 'Possession, legal', 7]];
+  return { group, CAPS, DEFAULTS, P, num, fmt, FILTERS, filter, LABELS, GATES, NEG, tierColor, CRIT, BENCH: 'ab-kokate-saffron-pashan' };
+})();
+</script>
+
+<script>
+// ---------- calculations (readers can inspect these in Sources) ----------
+dash.calc('summary', {
+  title: 'Headline counts',
+  description: 'Counts for the tiles and the opening sentence, worked out from the shortlist and the full project list.',
+  inputs: ['shortlist', 'all_projects'],
+  fn: (shortlist, all_projects) => {
+    const contender = shortlist.find((r) => r.is_benchmark);
+    const ranked = shortlist.filter((r) => !r.is_benchmark && r.score !== null).sort((a, b) => b.score - a.score);
+    return [{
+      projects_found: all_projects.length,
+      in_running: shortlist.length,
+      fully_cleared: shortlist.filter((r) => !r.open_gates).length,
+      beat_contender: contender ? ranked.filter((r) => r.score > contender.score).length : null,
+      second_look: all_projects.filter((r) => r.second_look).length,
+      top_name: ranked.length ? ranked[0].name : null,
+      top_score: ranked.length ? ranked[0].score : null,
+      contender_score: contender ? contender.score : null,
+    }];
+  },
+});
+dash.calc('gaps', {
+  title: 'Missing data by item',
+  description: 'How many shortlisted flats are missing each piece of information.',
+  inputs: ['shortlist'],
+  fn: (shortlist) => {
+    const counts = new Map();
+    for (const r of shortlist) for (const g of String(r.data_gaps || '').split('; ').filter(Boolean)) counts.set(g, (counts.get(g) || 0) + 1);
+    return [...counts].map(([gap, flats]) => ({ gap, flats })).sort((a, b) => b.flats - a.flats);
+  },
+});
+dash.calc('localities', {
+  title: 'Areas compared',
+  description: 'Shortlisted flats grouped by area, with median score, price and temple drive.',
+  inputs: ['shortlist'],
+  fn: (shortlist) => {
+    const groups = d3.group(shortlist, (r) => window.PF.group(r.locality));
+    const med = (rows, f) => { const v = rows.map((r) => r[f]).filter((x) => x !== null && x !== undefined); return v.length ? Math.round(d3.median(v) * 10) / 10 : null; };
+    return [...groups].map(([area, rows]) => ({ area, flats: rows.length, tier_a: rows.filter((r) => r.tier === 'A').length, median_score: med(rows, 'score'), median_price_cr: med(rows, 'all_in_min_cr'), median_temple_min: med(rows, 'temple_min') })).sort((a, b) => b.median_score - a.median_score);
+  },
+});
+dash.calc('criteria', {
+  title: 'Current contender vs Tier A, by criterion',
+  description: "Each criterion's 0–5 score for ABK Saffron next to the median of Tier A flats.",
+  inputs: ['scores', 'shortlist'],
+  fn: (scores, shortlist) => {
+    const tierA = new Set(shortlist.filter((r) => r.tier === 'A').map((r) => r.key));
+    return window.PF.CRIT.map(([criterion, label, weight]) => {
+      const mine = scores.find((s) => s.key === window.PF.BENCH && s.criterion === criterion);
+      const a = scores.filter((s) => tierA.has(s.key) && s.criterion === criterion && s.score !== null).map((s) => s.score);
+      return { criterion, label, weight, contender: mine ? mine.score : null, tier_a_median: a.length ? d3.median(a) : null };
+    });
+  },
+});
+</script>
+
+<script>
+// ---------- controls: listen and set filter values ----------
+(function () {
+  const PF = window.PF;
+  const bind = (id, name, conv) => document.querySelectorAll('#' + id).forEach((el) => el.addEventListener(el.type === 'range' ? 'input' : 'change', () => dash.setParams({ [name]: conv(el) })));
+  bind('f-budget', 'budget', (el) => +el.value);
+  bind('f-poss', 'poss', (el) => el.value);
+  bind('f-temple', 'temple', (el) => +el.value);
+  bind('f-score', 'minscore', (el) => +el.value);
+  bind('f-park', 'park', (el) => +el.value);
+  bind('f-nala', 'nala', (el) => +el.value);
+  bind('f-hard', 'hard', (el) => el.checked);
+  bind('f-bucket', 'bucket', (el) => el.value);
+  document.querySelectorAll('#f-q').forEach((el) => { let t; el.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => dash.setParams({ q: el.value }), 200); }); });
+  document.querySelectorAll('#m-keep').forEach((el) => el.addEventListener('click', () => dash.setParams({ missing: 'keep' })));
+  document.querySelectorAll('#m-hide').forEach((el) => el.addEventListener('click', () => dash.setParams({ missing: 'hide' })));
+  document.querySelectorAll('#f-reset').forEach((el) => el.addEventListener('click', () => dash.setParams({ budget: 2.6, poss: 'any', temple: 30, minscore: 0, park: 0, nala: 0, areas: '', hard: false, missing: 'keep' })));
+  document.querySelectorAll('#explore-table th[data-sort]').forEach((th) => th.addEventListener('click', () => {
+    const p = PF.P(); const [f, dir] = p.sort.split(':');
+    const nf = th.getAttribute('data-sort');
+    dash.setParams({ sort: nf + ':' + (f === nf && dir === 'desc' ? 'asc' : (nf === 'name' || nf === 'locality' || nf === 'possession_date' || nf === 'all_in_min_cr' || nf === 'temple_min' || nf === 'park_m' || nf === 'data_gap_count' || nf === 'tier' ? 'asc' : 'desc')) });
+  }));
+  dash.onData(() => {
+    const p = PF.P();
+    const set = (id, prop, v) => document.querySelectorAll('#' + id).forEach((el) => { if (document.activeElement !== el) el[prop] = v; });
+    set('f-budget', 'value', p.budget); set('f-poss', 'value', p.poss); set('f-temple', 'value', p.temple); set('f-score', 'value', p.minscore);
+    set('f-park', 'value', p.park); set('f-nala', 'value', p.nala); set('f-hard', 'checked', !!p.hard); set('f-q', 'value', p.q);
+    document.querySelectorAll('#m-keep').forEach((el) => el.setAttribute('aria-pressed', String(p.missing !== 'hide')));
+    document.querySelectorAll('#m-hide').forEach((el) => el.setAttribute('aria-pressed', String(p.missing === 'hide')));
+    const [f, dir] = p.sort.split(':');
+    document.querySelectorAll('#explore-table th[data-sort]').forEach((th) => { const on = th.getAttribute('data-sort') === f; th.classList.toggle('pf-sorted', on && dir === 'desc'); th.classList.toggle('pf-sorted-asc', on && dir === 'asc'); });
+  });
+})();
+</script>
+
+<script>
+// ---------- drawings ----------
+(function () {
+  const PF = window.PF; const F = PF.fmt;
+  const rowsOf = (id) => { const d = dash.data(id); return d.status === 'ok' && Array.isArray(d.data) ? d.data : null; };
+  const findRow = (rows, where) => { const [k, v] = where.split('='); return rows.find((r) => String(r[decodeURIComponent(k)]) === decodeURIComponent(v)); };
+  const select = (key) => { dash.setParams({ sel: key }); const el = document.getElementById('detail-card'); if (el) el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); };
+  const chip = (parent, text, cls, title) => { const s = parent.append('span').attr('class', 'pf-chip ' + (cls || '')).text(text); if (title) s.attr('title', title); return s; };
+  const gateChips = (td, r) => {
+    const open = String(r.open_gates || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const box = td.append('div').attr('class', 'pf-chips');
+    if (!open.length) chip(box, 'none open', 'ok');
+    for (const g of open) chip(box, g + ' ' + (PF.NEG.has(g) ? '(negotiable)' : ''), PF.NEG.has(g) ? 'warn' : 'bad', PF.GATES[g] + ' not yet confirmed');
+  };
+  const tierCell = (td, r) => { if (r.is_benchmark) td.append('span').text('★'); else td.append('span').attr('class', 'pf-tier').style('background', PF.tierColor(r.tier)).text(r.tier || '–'); };
+
+  // generic value
+  dash.draw('val', (el) => {
+    const rows = rowsOf(el.getAttribute('data-source'));
+    if (!rows) { el.textContent = '—'; return; }
+    let row = null;
+    if (el.hasAttribute('data-where')) row = findRow(rows, el.getAttribute('data-where'));
+    else row = rows[+(el.getAttribute('data-row') || 0)];
+    const v = row ? row[el.getAttribute('data-field')] : null;
+    const f = el.getAttribute('data-fmt');
+    el.textContent = v === null || v === undefined || v === '' ? 'unknown' : f && F[f] ? F[f](v) : String(v);
+  });
+  dash.draw('param', (el) => {
+    const p = PF.P(); const v = p[el.getAttribute('data-param')]; const f = el.getAttribute('data-fmt');
+    el.textContent = f === 'cr' ? (+v >= 3 ? 'any' : F.cr(v)) : f === 'min' ? (+v >= 30 ? '30 min' : v + ' min') : f === 'dist' ? (+v === 0 ? 'any distance' : v + ' m') : f === 'dist0' ? (+v === 0 ? '0 m' : v + ' m') : String(v);
+  });
+  dash.draw('sw', (el) => { el.style.background = PF.tierColor(['A', 'B', 'C'][+el.getAttribute('data-i')]); });
+
+  // filter caption: how many removed, how many kept because unknown
+  dash.draw('fc', (el) => {
+    const rows = rowsOf('shortlist'); if (!rows) { el.textContent = '—'; return; }
+    const p = PF.P(); const k = el.getAttribute('data-filter'); const f = PF.FILTERS[k];
+    if (!f.active(p)) { const unk = rows.filter((r) => r[f.field] === null || r[f.field] === undefined).length; el.textContent = unk ? `Off. ${unk} flats have no value for this.` : 'Off.'; return; }
+    const s = PF.filter(rows, p).stats[k];
+    el.textContent = `Removes ${s.removed}. ` + (p.missing === 'hide' ? (s.unknownHidden ? `Also hides ${s.unknownHidden} with no value.` : '') : (s.unknownKept ? `⚠ Keeps ${s.unknownKept} with no value.` : ''));
+  });
+
+  dash.draw('area-chips', (el) => {
+    const rows = rowsOf('shortlist'); if (!rows) { el.textContent = '—'; return; }
+    const p = PF.P(); const on = new Set((p.areas || '').split(',').filter(Boolean));
+    const counts = d3.rollup(rows, (v) => v.length, (r) => PF.group(r.locality));
+    const sel = d3.select(el); sel.selectAll('*').remove(); el.textContent = '';
+    const all = sel.append('button').attr('type', 'button').attr('class', 'pf-btn').attr('aria-pressed', String(on.size === 0)).text('All areas');
+    all.on('click', () => dash.setParams({ areas: '' }));
+    for (const [a, n] of [...counts].sort((x, y) => y[1] - x[1])) {
+      sel.append('button').attr('type', 'button').attr('class', 'pf-btn').attr('aria-pressed', String(on.has(a))).text(`${a} (${n})`)
+        .on('click', () => { const s = new Set(on); s.has(a) ? s.delete(a) : s.add(a); dash.setParams({ areas: [...s].join(',') }); });
+    }
+  });
+
+  dash.draw('result-line', (el) => {
+    const rows = rowsOf('shortlist'); if (!rows) { el.textContent = '—'; return; }
+    const p = PF.P(); const res = PF.filter(rows, p);
+    const unk = res.rows.filter((x) => x.unknownFor.length).length;
+    el.textContent = `Showing ${res.rows.length} of ${rows.length} flats.` + (unk ? ` ${unk} of them are shown only because a filtered value is unknown; they are marked ⚠.` : '') + (p.missing === 'hide' ? ' Flats with unknown values are hidden, so some good options may be missing.' : '');
+  });
+
+  // top table
+  dash.draw('top-rows', (el) => {
+    const rows = rowsOf('shortlist'); el.textContent = ''; if (!rows) return;
+    const top = rows.filter((r) => !r.is_benchmark && r.score !== null).sort((a, b) => b.score - a.score).slice(0, 10);
+    const bench = rows.find((r) => r.is_benchmark); if (bench) top.push(bench);
+    const tb = d3.select(el);
+    for (const r of top) {
+      const tr = tb.append('tr').attr('data-key', r.key).attr('class', 'pf-click' + (r.is_benchmark ? ' pf-bench' : '')).attr('tabindex', 0).on('click', () => select(r.key)).on('keydown', (e) => { if (e.key === 'Enter') select(r.key); });
+      tierCell(tr.append('td'), r);
+      const n = tr.append('td'); n.append('div').text(r.name); if (r.builder) n.append('div').attr('class', 'pf-cap').text(r.builder);
+      tr.append('td').text(r.locality || 'unknown');
+      tr.append('td').attr('class', 'pf-n').text(F.num1(r.score));
+      tr.append('td').attr('class', 'pf-n').text(r.is_benchmark ? '—' : (r.vs_benchmark > 0 ? '+' : '') + F.num1(r.vs_benchmark));
+      tr.append('td').attr('class', 'pf-n').text(r.all_in_text || 'unknown');
+      tr.append('td').text(r.possession_text || 'unknown');
+      tr.append('td').attr('class', 'pf-n').text(F.num1(r.temple_min));
+      gateChips(tr.append('td'), r);
+    }
+  });
+
+  dash.draw('loc-rows', (el) => {
+    const rows = rowsOf('localities'); el.textContent = ''; if (!rows) return;
+    const tb = d3.select(el);
+    for (const r of rows) {
+      const tr = tb.append('tr').attr('data-key', r.area);
+      tr.append('td').text(r.area); tr.append('td').attr('class', 'pf-n').text(r.flats); tr.append('td').attr('class', 'pf-n').text(r.tier_a);
+      tr.append('td').attr('class', 'pf-n').text(F.num1(r.median_score)); tr.append('td').attr('class', 'pf-n').text(r.median_price_cr === null ? '—' : d3.format('.2f')(r.median_price_cr));
+      tr.append('td').attr('class', 'pf-n').text(F.num1(r.median_temple_min));
+    }
+  });
+
+  dash.draw('second-rows', (el) => {
+    const rows = rowsOf('all_projects'); el.textContent = ''; if (!rows) return;
+    const list = rows.filter((r) => r.second_look).sort((a, b) => (a.second_look < b.second_look ? 1 : -1) || (a.temple_km ?? 99) - (b.temple_km ?? 99));
+    const tb = d3.select(el);
+    for (const r of list) {
+      const tr = tb.append('tr').attr('data-key', r.key);
+      const n = tr.append('td'); n.append('div').text(r.name || r.key); if (r.builder) n.append('div').attr('class', 'pf-cap').text(r.builder);
+      tr.append('td').text(r.locality || 'unknown');
+      tr.append('td').append('span').attr('class', 'pf-chip warn').text(r.second_look.startsWith('Rejected') ? 'Rejected on negotiable item / missing data' : 'Near temple, never reviewed');
+      tr.append('td').attr('class', 'pf-n').text(r.temple_km === null ? 'unknown' : d3.format('.1f')(r.temple_km));
+      tr.append('td').attr('class', 'pf-n').text(r.price3_min_cr === null ? 'unknown' : d3.format('.2f')(r.price3_min_cr));
+      tr.append('td').attr('class', 'pf-cap').text(r.reason || 'no notes');
+    }
+  });
+
+  // criterion chart
+  dash.draw('crit-chart', (el) => {
+    const d = dash.data('criteria'); const rows = d.status === 'ok' && Array.isArray(d.data) ? d.data : null;
+    if (!rows) { el.textContent = d.status === 'error' ? 'Failed to load' : '—'; return; }
+    el.textContent = '';
+    const w = Math.max(280, el.clientWidth); const rowH = 24; const lab = Math.min(170, w * 0.42); const h = rows.length * rowH + 24;
+    const x = d3.scaleLinear([0, 5], [lab, w - 34]);
+    const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${w} ${h}`).attr('role', 'img').attr('aria-label', "Criterion scores for the current contender versus Tier A median");
+    svg.append('g').selectAll('line').data([0, 1, 2, 3, 4, 5]).join('line').attr('x1', x).attr('x2', x).attr('y1', 0).attr('y2', h - 18).style('stroke', 'var(--cds-chart-grid)');
+    svg.append('g').selectAll('text').data([0, 1, 2, 3, 4, 5]).join('text').attr('x', x).attr('y', h - 4).attr('text-anchor', 'middle').text((v) => v);
+    const g = svg.append('g').selectAll('g').data(rows).join('g').attr('transform', (r, i) => `translate(0,${i * rowH})`);
+    g.append('text').attr('x', lab - 8).attr('y', rowH / 2 + 4).attr('text-anchor', 'end').text((r) => r.label);
+    g.append('rect').attr('x', x(0)).attr('y', 5).attr('height', rowH - 10).attr('width', (r) => x(r.contender ?? 0) - x(0)).style('fill', (r) => (r.tier_a_median !== null && r.contender !== null && r.contender < r.tier_a_median) ? 'var(--cds-chart-status-critical)' : dash.colors[0]);
+    g.append('line').attr('x1', (r) => x(r.tier_a_median ?? 0)).attr('x2', (r) => x(r.tier_a_median ?? 0)).attr('y1', 2).attr('y2', rowH - 2).style('stroke', 'var(--color-fg)').style('stroke-width', 2).style('display', (r) => r.tier_a_median === null ? 'none' : null);
+    g.append('text').attr('x', (r) => x(r.contender ?? 0) + 4).attr('y', rowH / 2 + 4).text((r) => r.contender === null ? '?' : r.contender);
+  });
+
+  dash.draw('gap-chart', (el) => {
+    const d = dash.data('gaps'); const rows = d.status === 'ok' && Array.isArray(d.data) ? d.data : null;
+    if (!rows) { el.textContent = d.status === 'error' ? 'Failed to load' : '—'; return; }
+    el.textContent = '';
+    const w = Math.max(280, el.clientWidth); const rowH = 24; const lab = Math.min(190, w * 0.45); const h = rows.length * rowH + 4;
+    const x = d3.scaleLinear([0, d3.max(rows, (r) => r.flats) || 1], [lab, w - 30]);
+    const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${w} ${h}`).attr('role', 'img').attr('aria-label', 'Shortlisted flats missing each data item');
+    const g = svg.selectAll('g').data(rows).join('g').attr('transform', (r, i) => `translate(0,${i * rowH})`);
+    g.append('text').attr('x', lab - 8).attr('y', rowH / 2 + 4).attr('text-anchor', 'end').text((r) => r.gap);
+    g.append('rect').attr('x', x(0)).attr('y', 5).attr('height', rowH - 10).attr('width', (r) => x(r.flats) - x(0)).style('fill', 'var(--color-warn)');
+    g.append('text').attr('x', (r) => x(r.flats) + 4).attr('y', rowH / 2 + 4).text((r) => r.flats);
+  });
+
+  // map
+  dash.draw('map', {
+    mount(el) {
+      el.textContent = '';
+      const svg = d3.select(el).append('svg');
+      const root = svg.append('g');
+      const tip = d3.select(el).append('div').attr('class', 'pf-tip').attr('hidden', '');
+      const state = { k: 1 };
+      const zoom = d3.zoom().scaleExtent([1, 10]).on('zoom', (e) => { state.k = e.transform.k; root.attr('transform', e.transform); root.selectAll('.pf-dot').attr('r', (d) => (d.is_benchmark ? 0 : 5.5) / Math.sqrt(state.k)); root.selectAll('.pf-mk').attr('font-size', 16 / Math.sqrt(state.k)); root.selectAll('.pf-line').style('stroke-width', function () { return (+this.getAttribute('data-w')) / state.k; }); });
+      svg.call(zoom);
+      return { svg, root, tip, state };
+    },
+    update(el, made) {
+      const rows = rowsOf('shortlist'); const layers = rowsOf('map_layers');
+      const { svg, root, tip, state } = made;
+      root.selectAll('*').remove();
+      if (!rows) return;
+      const w = Math.max(300, el.clientWidth); const h = 460;
+      svg.attr('viewBox', `0 0 ${w} ${h}`);
+      const pts = rows.filter((r) => r.lat && r.lon);
+      const temple = [73.79067, 18.54407];
+      const proj = d3.geoMercator().fitExtent([[24, 24], [w - 24, h - 24]], { type: 'MultiPoint', coordinates: [...pts.filter((r) => d3.geoDistance([r.lon, r.lat], temple) * 6371 <= 12).map((r) => [r.lon, r.lat]), temple] });
+      const path = d3.geoPath(proj);
+      if (layers) {
+        const by = d3.group(layers, (l) => l.kind);
+        const style = { water: ['var(--cds-chart-series-1, steelblue)', 1.6], road_trunk: ['var(--cds-chart-axis)', 2.2], road_primary: ['var(--cds-chart-axis)', 1.6], road_secondary: ['var(--cds-chart-grid)', 1.2] };
+        for (const [kind, ls] of by) {
+          const [col, sw] = style[kind] || ['var(--cds-chart-grid)', 1];
+          root.append('path').attr('class', 'pf-line').attr('data-w', sw).attr('d', path({ type: 'MultiLineString', coordinates: ls.map((l) => l.coords) })).style('fill', 'none').style('stroke', kind === 'water' ? dash.colors[0] : col).style('stroke-opacity', kind === 'water' ? 0.45 : 0.9).style('stroke-width', sw / state.k);
+        }
+      }
+      // scale bar 1 km
+      const [x0, y0] = proj([73.74, 18.50]); const [x1] = proj([73.74 + 1 / (111.32 * Math.cos(18.5 * Math.PI / 180)), 18.50]);
+      const sb = svg.selectAll('g.pf-scale').data([0]).join('g').attr('class', 'pf-scale').attr('transform', `translate(16,${h - 18})`);
+      sb.selectAll('*').remove(); sb.append('line').attr('x1', 0).attr('x2', Math.abs(x1 - x0)).style('stroke', 'var(--color-fg)').style('stroke-width', 2);
+      sb.append('text').attr('x', 0).attr('y', -5).style('fill', 'var(--cds-text-secondary)').style('font-size', 'var(--cds-font-size-caption)').text('1 km (at full zoom-out)');
+      const p = PF.P(); const shown = new Set(PF.filter(rows, p).rows.map((x) => x.row.key));
+      const [tx, ty] = proj(temple);
+      root.append('text').attr('class', 'pf-mk').attr('x', tx).attr('y', ty).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').attr('font-size', 16 / Math.sqrt(state.k)).style('fill', 'var(--color-fg)').text('◆');
+      const show = (e, r) => {
+        const [mx, my] = d3.pointer(e, el);
+        tip.attr('hidden', null).style('left', Math.min(mx + 12, w - 250) + 'px').style('top', (my + 12) + 'px');
+        tip.selectAll('*').remove();
+        tip.append('div').style('font-weight', 'var(--cds-font-weight-medium)').text(r.name);
+        tip.append('div').text(`${r.locality || ''} · score ${F.num1(r.score)}`);
+        tip.append('div').text(`₹${r.all_in_text || '?'} Cr · ${F.num1(r.temple_min)} min to temple`);
+        if (!shown.has(r.key)) tip.append('div').text('Filtered out');
+      };
+      const dots = pts.filter((r) => !r.is_benchmark).sort((a, b) => (shown.has(a.key) - shown.has(b.key)) || (a.score - b.score));
+      root.selectAll('circle.pf-dot').data(dots).join('circle').attr('class', 'pf-dot')
+        .attr('cx', (r) => proj([r.lon, r.lat])[0]).attr('cy', (r) => proj([r.lon, r.lat])[1]).attr('r', 5.5 / Math.sqrt(state.k))
+        .style('fill', (r) => PF.tierColor(r.tier)).style('fill-opacity', (r) => shown.has(r.key) ? 0.95 : 0.15)
+        .style('stroke', (r) => r.key === p.sel ? 'var(--color-fg)' : 'var(--color-bg)').style('stroke-width', (r) => r.key === p.sel ? 2.5 : 1).style('cursor', 'pointer')
+        .on('mousemove', show).on('mouseleave', () => tip.attr('hidden', '')).on('click', (e, r) => select(r.key));
+      const b = pts.find((r) => r.is_benchmark);
+      if (b) { const [bx, by] = proj([b.lon, b.lat]); root.append('text').attr('class', 'pf-mk').attr('x', bx).attr('y', by).attr('text-anchor', 'middle').attr('dominant-baseline', 'central').attr('font-size', 16 / Math.sqrt(state.k)).style('fill', 'var(--color-warn)').style('cursor', 'pointer').text('★').on('mousemove', (e) => show(e, b)).on('mouseleave', () => tip.attr('hidden', '')).on('click', () => select(b.key)); }
+    },
+  });
+
+  // explore table
+  dash.draw('explore-rows', (el) => {
+    const rows = rowsOf('shortlist'); el.textContent = ''; if (!rows) return;
+    const p = PF.P(); const res = PF.filter(rows, p).rows;
+    const [f, dir] = p.sort.split(':');
+    const tierOrder = { A: 0, B: 1, C: 2 };
+    res.sort((a, b) => {
+      let va = a.row[f], vb = b.row[f];
+      if (f === 'tier') { va = tierOrder[va] ?? 9; vb = tierOrder[vb] ?? 9; }
+      if (va === null || va === undefined) return 1; if (vb === null || vb === undefined) return -1;
+      return (va < vb ? -1 : va > vb ? 1 : 0) * (dir === 'desc' ? -1 : 1);
+    });
+    const tb = d3.select(el);
+    if (!res.length) { tb.append('tr').append('td').attr('colspan', 11).text('No flats match. Loosen a filter, or reset them.'); return; }
+    for (const { row: r, unknownFor } of res) {
+      const tr = tb.append('tr').attr('data-key', r.key).attr('tabindex', 0).attr('class', 'pf-click' + (r.key === p.sel ? ' pf-sel' : r.is_benchmark ? ' pf-bench' : '')).on('click', () => select(r.key)).on('keydown', (e) => { if (e.key === 'Enter') select(r.key); });
+      tierCell(tr.append('td'), r);
+      const n = tr.append('td'); n.append('div').text(r.name + (unknownFor.length ? ' ⚠' : '')); if (unknownFor.length) n.append('div').attr('class', 'pf-cap').text('Unknown: ' + unknownFor.map((k) => PF.LABELS[k]).join(', '));
+      tr.append('td').text(r.locality || 'unknown');
+      tr.append('td').attr('class', 'pf-n').text(F.num1(r.score));
+      tr.append('td').attr('class', 'pf-n').text(r.all_in_min_cr === null ? 'unknown' : d3.format('.2f')(r.all_in_min_cr));
+      tr.append('td').text(F.date(r.possession_date));
+      tr.append('td').attr('class', 'pf-n').text(F.num1(r.temple_min));
+      tr.append('td').attr('class', 'pf-n').text(F.m(r.park_m));
+      tr.append('td').attr('class', 'pf-n').text(F.m(r.nala_m, PF.CAPS.nala_m));
+      gateChips(tr.append('td'), r);
+      tr.append('td').attr('class', 'pf-n').attr('title', r.data_gaps || 'nothing missing').text(r.data_gap_count ? '⚠ ' + r.data_gap_count : '0');
+    }
+  });
+
+  // detail panel
+  dash.draw('detail', (el) => {
+    const rows = rowsOf('shortlist'); if (!rows) { el.textContent = '—'; return; }
+    const p = PF.P(); el.textContent = '';
+    let r = rows.find((x) => x.key === p.sel);
+    if (!r) r = rows.filter((x) => !x.is_benchmark).sort((a, b) => b.score - a.score)[0];
+    if (!r) return;
+    const bench = rows.find((x) => x.is_benchmark);
+    const box = d3.select(el).append('div').style('display', 'flex').style('flex-direction', 'column').style('gap', 'var(--cds-gap-md)');
+    const head = box.append('div').attr('class', 'pf-row').style('justify-content', 'space-between');
+    const t = head.append('div');
+    t.append('div').attr('class', 'pf-eyebrow').text(p.sel ? 'Selected flat' : 'Top-ranked flat (click any flat to change)');
+    t.append('h3').style('font-size', 'var(--cds-font-size-heading)').text(r.name);
+    t.append('div').attr('class', 'pf-cap').text([r.builder, r.locality, r.rera ? 'MahaRERA ' + r.rera : 'MahaRERA number unknown'].filter(Boolean).join(' · '));
+    const btns = head.append('div').attr('class', 'pf-row');
+    const cmp = (p.cmp || '').split(',').filter(Boolean);
+    if (!r.is_benchmark) btns.append('button').attr('type', 'button').attr('class', 'pf-btn').attr('aria-pressed', String(cmp.includes(r.key))).text(cmp.includes(r.key) ? 'In compare ✓' : 'Add to compare')
+      .on('click', () => { const s = cmp.filter((k) => k !== r.key); if (!cmp.includes(r.key)) s.push(r.key); dash.setParams({ cmp: s.slice(-3).join(',') }); });
+    if (r.website) btns.append('a').attr('href', r.website).attr('target', '_blank').attr('rel', 'noopener').attr('class', 'pf-cap').text('Builder site ↗');
+
+    const gates = box.append('div').attr('class', 'pf-chips');
+    for (const g of Object.keys(PF.GATES)) {
+      const st = r['gate_' + g];
+      chip(gates, `${g} ${PF.GATES[g]}: ${st === 'pass' ? 'yes' : st === 'unknown' ? 'to confirm' + (PF.NEG.has(g) ? ' (negotiable)' : '') : 'no'}`, st === 'pass' ? 'ok' : st === 'unknown' ? 'warn' : 'bad');
+    }
+    const two = box.append('div').attr('class', 'pf-two');
+    const kv = two.append('dl').attr('class', 'pf-kv');
+    const add = (label, value, field) => { kv.append('dt').text(label); const dd = kv.append('dd').text(value); if (field) dd.attr('data-source', 'shortlist').attr('data-field', field).attr('data-where', 'key=' + encodeURIComponent(r.key)); };
+    add('Score', `${F.num1(r.score)} / 100` + (r.is_benchmark ? '' : ` (${r.vs_benchmark > 0 ? '+' : ''}${F.num1(r.vs_benchmark)} vs contender)`), 'score');
+    add('All-in price', r.all_in_text ? `₹${r.all_in_text} Cr` : 'unknown', 'all_in_text');
+    add('Carpet area', r.carpet_text ? `${r.carpet_text} sq ft` : 'unknown', 'carpet_text');
+    add('Possession', r.possession_text || 'unknown', 'possession_text');
+    add('Size', [r.units ? r.units + ' flats' : null, r.floors ? r.floors + ' floors' : null].filter(Boolean).join(', ') || 'unknown');
+    add('Parking', r.parking || 'unknown', 'parking');
+    add('Water', r.water || 'unknown', 'water');
+    const kv2 = two.append('dl').attr('class', 'pf-kv');
+    const add2 = (label, value, field) => { kv2.append('dt').text(label); const dd = kv2.append('dd').text(value); if (field) dd.attr('data-source', 'shortlist').attr('data-field', field).attr('data-where', 'key=' + encodeURIComponent(r.key)); };
+    add2('Temple drive', r.temple_min === null ? 'unknown' : `${F.num1(r.temple_min)} min at peak (${r.temple_km ?? '?'} km)`, 'temple_min');
+    add2('Kothrud drive', r.kothrud_min === null ? 'unknown' : `${F.num1(r.kothrud_min)} min at peak`, 'kothrud_min');
+    add2('Nearest park', F.m(r.park_m), 'park_m');
+    add2('Nala or river', F.m(r.nala_m, PF.CAPS.nala_m), 'nala_m');
+    add2('Mapped slum', F.m(r.slum_m, PF.CAPS.slum_m), 'slum_m');
+    add2('Main road', F.m(r.main_road_m, PF.CAPS.main_road_m), 'main_road_m');
+    add2('Shops within 500 m', r.shops_500m === null ? 'unknown' : String(r.shops_500m), 'shops_500m');
+    add2('Clinics within 1 km', r.clinics_1km === null ? 'unknown' : String(r.clinics_1km), 'clinics_1km');
+    add2('Pharmacy', F.m(r.pharmacy_m), 'pharmacy_m');
+    add2('High-tension line', F.m(r.ht_line_m), 'ht_line_m');
+    if (r.data_gaps) box.append('p').attr('class', 'pf-note pf-cap').text('Still unknown: ' + r.data_gaps + '.');
+    if (r.why) box.append('p').text('Why it ranks here: ' + r.why);
+    if (r.red_flags) box.append('p').text('Red flags: ' + r.red_flags);
+    if (r.small_things) box.append('p').attr('class', 'pf-cap').text('Small things: ' + r.small_things);
+
+    // criterion bars vs parents
+    const sc = rowsOf('scores');
+    if (sc) {
+      const mine = new Map(sc.filter((s) => s.key === r.key).map((s) => [s.criterion, s]));
+      const theirs = new Map(sc.filter((s) => s.key === PF.BENCH).map((s) => [s.criterion, s]));
+      const data = PF.CRIT.map(([c, label]) => ({ c, label, v: mine.get(c)?.score ?? null, b: theirs.get(c)?.score ?? null, why: mine.get(c)?.rationale }));
+      const cw = Math.max(280, el.clientWidth - 8); const rowH = 22; const lab = Math.min(170, cw * 0.4); const h = data.length * rowH + 22;
+      const x = d3.scaleLinear([0, 5], [lab, cw - 30]);
+      box.append('h3').text(r.is_benchmark ? 'Criterion scores' : "Criterion scores (bar) vs the current contender (tick)");
+      const svg = box.append('div').attr('class', 'pf-chart').append('svg').attr('width', '100%').attr('viewBox', `0 0 ${cw} ${h}`).attr('role', 'img').attr('aria-label', 'Criterion scores for ' + r.name);
+      svg.append('g').selectAll('line').data([0, 1, 2, 3, 4, 5]).join('line').attr('x1', x).attr('x2', x).attr('y1', 0).attr('y2', h - 16).style('stroke', 'var(--cds-chart-grid)');
+      svg.append('g').selectAll('text').data([0, 1, 2, 3, 4, 5]).join('text').attr('x', x).attr('y', h - 3).attr('text-anchor', 'middle').text((v) => v);
+      const g = svg.append('g').selectAll('g').data(data).join('g').attr('transform', (d, i) => `translate(0,${i * rowH})`);
+      g.append('title').text((d) => d.why || 'no rationale recorded');
+      g.append('text').attr('x', lab - 8).attr('y', rowH / 2 + 4).attr('text-anchor', 'end').text((d) => d.label);
+      g.append('rect').attr('x', x(0)).attr('y', 5).attr('height', rowH - 10).attr('width', (d) => x(d.v ?? 0) - x(0)).style('fill', PF.tierColor(r.tier));
+      if (!r.is_benchmark) g.append('line').attr('x1', (d) => x(d.b ?? 0)).attr('x2', (d) => x(d.b ?? 0)).attr('y1', 2).attr('y2', rowH - 2).style('stroke', 'var(--color-warn)').style('stroke-width', 2.5).style('display', (d) => d.b === null ? 'none' : null);
+      g.append('text').attr('x', (d) => x(d.v ?? 0) + 4).attr('y', rowH / 2 + 4).text((d) => d.v === null ? 'not scored' : d.v);
+      const why = box.append('details'); why.append('summary').text('Why each score');
+      const ul = why.append('ul').style('margin', '8px 0 0').style('padding-left', '18px').attr('class', 'pf-cap');
+      for (const d of data) ul.append('li').text(`${d.label}: ${d.v ?? '?'} — ${d.why || 'no rationale recorded'}`);
+    }
+    // observations
+    const ob = rowsOf('observations');
+    if (ob) {
+      const list = ob.filter((o) => o.key === r.key).sort((a, b) => (a.sentiment ?? 0) - (b.sentiment ?? 0) || (b.severity ?? 0) - (a.severity ?? 0));
+      box.append('h3').text(`What the research found (${list.length} notes)`);
+      const render = (parent, items) => { const ul = parent.append('ul'); for (const o of items) { const li = ul.append('li').attr('class', (o.sentiment ?? 0) < 0 ? 'neg' : (o.sentiment ?? 0) > 0 ? 'pos' : ''); li.append('div').text(o.text); const meta = li.append('div').attr('class', 'pf-cap'); meta.append('span').text([o.factor, o.severity ? 'severity ' + o.severity : null, o.source].filter(Boolean).join(' · ') + ' '); if (o.url && /^https?:/.test(o.url)) meta.append('a').attr('href', o.url).attr('target', '_blank').attr('rel', 'noopener').text('source ↗'); } };
+      const wrap = box.append('div').attr('class', 'pf-obs');
+      render(wrap, list.slice(0, 8));
+      if (list.length > 8) { const more = wrap.append('details'); more.append('summary').text(`Show ${list.length - 8} more`); render(more, list.slice(8)); }
+    }
+  });
+
+  // compare
+  dash.draw('compare', (el) => {
+    const rows = rowsOf('shortlist'); if (!rows) { el.textContent = '—'; return; }
+    el.textContent = '';
+    const p = PF.P(); const keys = (p.cmp || '').split(',').filter(Boolean);
+    const cols = [rows.find((r) => r.is_benchmark), ...keys.map((k) => rows.find((r) => r.key === k))].filter(Boolean);
+    if (cols.length < 2) { d3.select(el).append('p').attr('class', 'pf-cap').text('Nothing added yet. Pick a flat in the table or on the map, then press "Add to compare".'); }
+    const attrs = [['Score', 'score', (r) => F.num1(r.score)], ['All-in ₹ Cr', 'all_in_text', (r) => r.all_in_text || 'unknown'], ['Carpet sq ft', 'carpet_text', (r) => r.carpet_text || 'unknown'], ['Possession', 'possession_text', (r) => r.possession_text || 'unknown'],
+      ['Temple, peak', 'temple_min', (r) => F.min(r.temple_min)], ['Kothrud, peak', 'kothrud_min', (r) => F.min(r.kothrud_min)], ['Park', 'park_m', (r) => F.m(r.park_m)], ['Nala or river', 'nala_m', (r) => F.m(r.nala_m, PF.CAPS.nala_m)],
+      ['Shops within 500 m', 'shops_500m', (r) => r.shops_500m ?? 'unknown'], ['Water', 'water', (r) => r.water || 'unknown'], ['Parking', 'parking', (r) => r.parking || 'unknown'], ['Open must-haves', 'open_gates', (r) => r.open_gates || 'none'], ['Still unknown', 'data_gaps', (r) => r.data_gaps || 'nothing'], ['Red flags', 'red_flags', (r) => r.red_flags || 'none recorded']];
+    const t = d3.select(el).append('table'); const hr = t.append('thead').append('tr'); hr.append('th').text('');
+    for (const c of cols) { const th = hr.append('th').text(c.is_benchmark ? "Current contender (ABK Saffron)" : c.name); if (!c.is_benchmark) th.append('button').attr('type', 'button').attr('class', 'pf-btn').style('margin-left', '6px').attr('aria-label', 'Remove ' + c.name + ' from compare').text('×').on('click', () => dash.setParams({ cmp: keys.filter((k) => k !== c.key).join(',') })); }
+    const tb = t.append('tbody');
+    for (const [label, field, f] of attrs) {
+      const tr = tb.append('tr'); tr.append('th').text(label);
+      for (const c of cols) tr.append('td').attr('data-source', 'shortlist').attr('data-field', field).attr('data-where', 'key=' + encodeURIComponent(c.key)).text(String(f(c)));
+    }
+  });
+
+  // all projects
+  const allFiltered = () => {
+    const rows = rowsOf('all_projects'); if (!rows) return null;
+    const p = PF.P(); const q = (p.q || '').trim().toLowerCase();
+    return rows.filter((r) => (!p.bucket || r.bucket === p.bucket) && (!q || [r.name, r.builder, r.locality, r.rera].some((v) => v && String(v).toLowerCase().includes(q))))
+      .sort((a, b) => (a.temple_km ?? 99) - (b.temple_km ?? 99));
+  };
+  dash.draw('bucket-select', (sel) => {
+    const rows = rowsOf('all_projects'); const p = PF.P();
+    const counts = rows ? d3.rollup(rows, (v) => v.length, (r) => r.bucket) : new Map();
+    sel.replaceChildren(new Option('All statuses', ''), ...[...counts].sort((a, b) => b[1] - a[1]).map(([b, n]) => new Option(`${b} (${n})`, b)));
+    sel.value = p.bucket || '';
+  });
+  dash.draw('allp-count', (el) => {
+    const list = allFiltered(); if (!list) { el.textContent = '—'; return; }
+    el.textContent = `${list.length} projects match, nearest to the temple first.` + (list.length > 300 ? ' Showing the first 300; search to narrow it down.' : '');
+  });
+  dash.draw('allp-rows', (el) => {
+    const list = allFiltered(); el.textContent = ''; if (!list) return;
+    const tb = d3.select(el);
+    for (const r of list.slice(0, 300)) {
+      const tr = tb.append('tr').attr('data-key', r.key);
+      tr.append('td').text(r.name || r.key); tr.append('td').text(r.builder || ''); tr.append('td').text(r.locality || '');
+      const st = tr.append('td'); st.append('span').attr('class', 'pf-chip ' + (r.bucket === 'In shortlist' ? 'ok' : r.bucket.startsWith('Rejected') ? 'bad' : 'warn')).text(r.bucket);
+      if (r.second_look) st.append('div').attr('class', 'pf-cap').text('⚠ ' + r.second_look);
+      tr.append('td').attr('class', 'pf-n').text(r.temple_km === null ? 'unknown' : d3.format('.1f')(r.temple_km));
+      tr.append('td').attr('class', 'pf-n').text(r.price3_min_cr === null ? 'unknown' : d3.format('.2f')(r.price3_min_cr));
+      tr.append('td').text(F.date(r.possession_date));
+      tr.append('td').attr('class', 'pf-cap').text(r.reason || '');
+    }
+  });
+})();
+</script>
+
+</div>
+</body>
+</html>
